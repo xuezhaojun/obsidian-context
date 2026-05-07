@@ -1,6 +1,6 @@
 import { App, EventRef, MarkdownView, Workspace } from "obsidian";
-import { writeFile } from "fs";
-import { join } from "path";
+import { realpathSync, writeFile } from "fs";
+import { resolve, sep } from "path";
 import { PluginSettings } from "../types";
 import { WorkspaceContext } from "./WorkspaceContext";
 
@@ -35,9 +35,10 @@ export class ContextManager {
 
   updateSettings(settings: PluginSettings): void {
     const intervalChanged = settings.refreshIntervalMs !== this.settings.refreshIntervalMs;
+    const enabledChanged = settings.injectWorkspaceContext !== this.settings.injectWorkspaceContext;
     this.settings = settings;
     this.updateListeners();
-    if (intervalChanged) {
+    if (settings.injectWorkspaceContext && (intervalChanged || enabledChanged)) {
       this.startPeriodicRefresh();
     }
   }
@@ -157,8 +158,25 @@ export class ContextManager {
     );
 
     try {
+      // Resolve the absolute path and verify it stays within the vault.
+      // realpathSync is used on both sides so that symlinks in .obsidian or any
+      // ancestor directory cannot redirect the write to an arbitrary FS location
+      // even though the lexical path would pass the startsWith() check.
+      const realVaultRoot = realpathSync(resolve(basePath)) + sep;
+
       // .obsidian/ directory is always created by Obsidian itself
-      const filePath = join(basePath, this.getConfigDir(), "context.json");
+      const lexicalPath = resolve(basePath, this.getConfigDir(), "context.json");
+      const filePath = realpathSync(lexicalPath);
+
+      // Validate that the real (symlink-resolved) file path is within the vault
+      if (!filePath.startsWith(realVaultRoot)) {
+        console.error(
+          "[AgentContext] Refusing to write outside vault:",
+          filePath,
+        );
+        return;
+      }
+
       writeFile(filePath, JSON.stringify(state, null, 2), "utf-8", (err) => {
         if (err) {
           console.error("[AgentContext] Failed to write context.json:", err);
